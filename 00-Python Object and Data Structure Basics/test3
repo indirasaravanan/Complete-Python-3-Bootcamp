@@ -1,0 +1,252 @@
+import {
+    filter, Observable, tap, zip,
+} from 'rxjs';
+import {EventEmitter, Injectable} from '@angular/core';
+import {Datasource, PROXY_PATH} from '@missionaccelerator/common/model';
+import {BaseConfigService, EnvironmentService} from '@missionaccelerator/common/service';
+import {MatomoInitializerService} from 'ngx-matomo-client';
+import {GridState, OperatorType} from 'angular-slickgrid';
+import {MatTabChangeEvent} from '@angular/material/tabs';
+import {uiBuilder} from '@core/config/uiConfig/uiBuilder/uiBuilder';
+import {AssetId} from '@customTypes/assetId.interface';
+import {AssetList} from '@customTypes/assetList.interface';
+import {ConfigDTO} from '@customTypes/configDTO.interface';
+import {Schedule} from '@customTypes/schedule.interface';
+import {Tab} from '@customTypes/tab.interface';
+import {Platform} from '@customTypes/platform.interface';
+import {ConfigApiService} from '@apis/config-api.service';
+import {environment} from '@env/environment';
+import {schemaMapping} from '../schemas/app-tables-schema';
+
+@Injectable({
+    providedIn: 'root',
+})
+export class AppConfigService extends BaseConfigService {
+    private assets: AssetId[] = [];
+
+    private configIsLoaded = false;
+
+    private configDTO: Record<string, ConfigDTO> = {};
+
+    private gridPresets: GridState = {};
+
+    public onTabIndexChange: EventEmitter<number> = new EventEmitter();
+
+    public onTabFocusChange: EventEmitter<MatTabChangeEvent> = new EventEmitter();
+
+    constructor(
+private configAPIService: ConfigApiService,
+        private matomoInitializer: MatomoInitializerService,
+    ) {
+        super();
+        this.configDTO = this.addSchemaToObject(uiBuilder);
+    }
+
+    getAssets(): AssetId[] {
+        return this.assets;
+    }
+
+    getConfigDto(): ConfigDTO {
+        return this.configDTO[this.getPlatform()];
+    }
+
+    getDatasources(): Datasource[] {
+        const results: Datasource[] = [];
+        const config = this.getConfigObj(this.getPlatform()) as Platform;
+        const sources = !!config && !!config.sources ? config.sources : [];
+        for (const baseSource of sources) {
+            results.push(baseSource.source);
+        }
+        return results;
+    }
+
+    getDefaultTab(): Tab {
+        return {
+            componentParameters: {},
+            description: '',
+            dataGrid: [],
+            dataSourceKeys: [],
+            grids: [],
+            enableCriticalMSP: false,
+            enableFlightChart: false,
+            enableHistoryTimeline: false,
+            links: [],
+            title: '',
+            type: '',
+        };
+    }
+
+    getDefaultAssetList(): AssetList {
+        return {
+            grids: [],
+        };
+    }
+
+    getGridPresets(): GridState {
+        return this.gridPresets;
+    }
+
+    getTDKitGridPresets(platform: string, dataContext: any): GridState {
+        switch (platform) {
+        case 'fa18':
+            return {
+                filters: [{
+                    columnId: 'td_number_basic',
+                    searchTerms: [dataContext.basic],
+                    operator: OperatorType.equal,
+                }],
+            };
+        case 'p8':
+            return {
+                filters: [{
+                    columnId: 'td_number_basic',
+                    searchTerms: [parseInt(dataContext.BASIC, 10)],
+                    operator: OperatorType.contains,
+                }],
+            };
+        default:
+            return {};
+        }
+    }
+
+    getPlatformLegalMarkings(): Map<string, string> | undefined {
+        const platform = this.getConfigObj(this.getPlatform()) as Platform;
+        const legalMarkings = new Map();
+        const markingDefinitions = new Map<string, string>(this.getLegalMarkings().markings);
+        if (platform && platform.legal.length > 0) {
+            platform.legal.forEach((marking) => {
+                legalMarkings.set(marking, markingDefinitions.get(marking));
+            });
+            return legalMarkings;
+        }
+        return undefined;
+    }
+
+    getSummaryTab(schedule: Schedule): Tab {
+        return this.getTabsByType('summary', schedule)[0];
+    }
+
+    getTabIndexByTitle(title: string): number {
+        const tabs = this.getConfigDto()?.tabs;
+        const tabIndex = !!tabs && tabs.length > 0 ? tabs.findIndex((tab) => tab.title === title) : 0;
+        return tabIndex;
+    }
+
+    getTabsByType(tabName: string, schedule: Schedule): Tab[] {
+        const results: Tab[] = [];
+        for (const tab of this.getConfigDto().tabs) {
+            const dataSourceKey = schedule.source.key;
+            if (tab.type.toLowerCase() === tabName.toLowerCase() && dataSourceKey) {
+                // Check if this tab is required for this schedule.
+                if (tab.dataSourceKeys.indexOf(dataSourceKey) > -1) {
+                    const filteredTab = {...tab};
+                    filteredTab.grids = [];
+                    // Check if this grid required for this schedule.
+                    for (const grid of tab.grids) {
+                        if (grid.dataSourceKeys && dataSourceKey) {
+                            if (grid.dataSourceKeys.indexOf(dataSourceKey) > -1 || grid.dataSourceKeys.length === 0) {
+                                filteredTab.grids.push(grid);
+                            }
+                        }
+                    }
+                    results.push(filteredTab);
+                }
+            }
+        }
+        return results;
+    }
+
+    private processConfigObj(platforms: Platform[]): void {
+        for (const config of platforms) {
+            this.setConfigObj(config.platform, config);
+        }
+    }
+
+    private addSchemaToObject(configMap:Record<string, ConfigDTO>):Record<string, ConfigDTO> {
+        for (const key in configMap) {
+            if (key) {
+                const confDTO:ConfigDTO = configMap[key];
+                for (const tab of confDTO.tabs) {
+                    for (const grids of tab.grids) {
+                        if (grids.lookUp.schemaKey) grids.schema = schemaMapping.get(grids.lookUp.schemaKey);
+                    }
+                }
+                if (confDTO.scheduleGrid && confDTO.scheduleGrid.grids) {
+                    for (const grids of confDTO.scheduleGrid.grids) {
+                        if (grids.lookUp.schemaKey) grids.schema = schemaMapping.get(grids.lookUp.schemaKey);
+                    }
+                }
+                if (confDTO.assetList && confDTO.assetList.grids) {
+                    for (const grids of confDTO.assetList.grids) {
+                        if (grids.lookUp.schemaKey) grids.schema = schemaMapping.get(grids.lookUp.schemaKey);
+                    }
+                }
+            }
+        }
+        return configMap;
+    }
+
+    requestAppConfig(): Observable<boolean> {
+        return new Observable((observer) => {
+            this.configAPIService.getHostingEnvironment();
+            if (!this.configIsLoaded) {
+                zip(
+                    this.configAPIService.getPlatformConfig(),
+                    this.configAPIService.getLegalMarkings(),
+                    this.configAPIService.getLinks(),
+                    this.configAPIService.getJiraURL(),
+                ).pipe(
+                    filter((res) => res[0].length > 0), // Checks if there's at least one platform, if not it goes directly to complete()
+                    tap((res) => this.processConfigObj(res[0])),
+                ).subscribe({
+                    next: (response) => {
+                        this.startTracking();
+                        this.setLegalMarkings(response[1]);
+                        this.setExtLinks(response[2].length ? response[2] : []);
+                        this.setJiraUrl(response[3].jiraUrl);
+                        this.setEnableBugForm(response[3].enableBugForm);
+                        this.configIsLoaded = true;
+                    },
+                    error: () => observer.error(this.configIsLoaded),
+                    complete: () => {
+                        console.debug('No platforms were loaded. Please check config.');
+                        observer.next(this.configIsLoaded);
+                    },
+                });
+            } else {
+                observer.next(this.configIsLoaded);
+            }
+        });
+    }
+
+    private startTracking() {
+        this.matomoInitializer.initializeTracker({
+            trackerUrl: EnvironmentService.getApiPath({
+                environment,
+                proxyPath: PROXY_PATH.USER_ANALYTICS,
+                apiPrefix: '',
+            }),
+            siteId: environment.matomoTrackingId!,
+        });
+    }
+
+    setPlatform(platform: string) {
+        if (!platform) {
+            super.setPlatform('');
+        } else if (this.platformExists(platform)) {
+            super.setPlatform(platform);
+        } else if (this.platformExists(this.getPlatform())) {
+            super.setPlatform(this.getPlatform());
+        } else if (this.getPlatformsList().length > 0) {
+            super.setPlatform((this.getPlatformsList() as Platform[])[0].platform);
+        }
+    }
+
+    setAssets(assets: AssetId[]): void {
+        this.assets = assets;
+    }
+
+    setGridPresets(gridPresets: GridState): void {
+        this.gridPresets = gridPresets;
+    }
+}
