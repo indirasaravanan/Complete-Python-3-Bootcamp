@@ -1,0 +1,22 @@
+import {Injectable} from '@angular/core';
+import {Observable} from 'rxjs';
+
+import {BaseConfigAPIService, HostingEnvironmentService} from '@missionaccelerator/common/service';
+
+import {Platform} from '@customTypes/platform.interface';
+import {AppBaseApiService} from './app-base-api.service';
+
+@Injectable({
+    providedIn: 'root',
+})
+export class ConfigApiService extends BaseConfigAPIService {
+    private configPath = 'config/';
+
+    constructor(private baseAPIServices: AppBaseApiService, hostingEnvironmentService: HostingEnvironmentService) {
+        super(baseAPIServices, hostingEnvironmentService);
+    }
+
+    getPlatformConfig(): Observable<Platform[]> {
+        return this.baseAPIServices.get<Platform[]>(`${this.configPath}platforms`);
+    }
+}
