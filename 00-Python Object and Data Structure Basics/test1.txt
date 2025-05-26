@@ -1,0 +1,455 @@
+import {
+    Component, OnInit, effect,
+    signal,
+    AfterViewInit,
+    OnDestroy,
+} from '@angular/core';
+import {ActivatedRoute, Router} from '@angular/router';
+import {ScheduleApiService} from '@apis/schedule-api.service';
+import {ScheduleService} from '@core/services/schedule.service';
+import {AssetScheduleApiService} from '@apis/asset-schedule-api.service';
+import {AssetSchedule} from '@customTypes/assetSchedule.interface';
+import {DataCard, AddNewDataCard} from '@customTypes/dataCard.interface';
+import {
+    GanttBar, BreadcrumbLink, ModalSubmitEvent,
+} from '@missionaccelerator/common/model';
+import {MatDialog, MatDialogModule} from '@angular/material/dialog';
+import {MaModalComponent} from '@missionaccelerator/common/ma-modal';
+import {CalendarService} from '@services/calendar.service';
+import {
+    AnalyticsModule,
+    BreadcrumbService, EnableTourService, NotificationsService, UiTourPreferenceService,
+} from '@missionaccelerator/common/service';
+import {BrowserRefreshedService} from '@core/services/browserRefreshed.service';
+import {MaSearchComponent} from '@missionaccelerator/common/ma-search';
+import {MaDataCardComponent} from '@missionaccelerator/common/ma-data-card';
+import {MaGanttChartModule} from '@missionaccelerator/common/ma-gantt-chart';
+import {MaBreadcrumbsModule} from '@missionaccelerator/common/ma-breadcrumbs';
+import {SourceSelectionComponent} from '@features/v3/source-selection/source-selection.component';
+import {MatButtonModule} from '@angular/material/button';
+import {MatIconModule} from '@angular/material/icon';
+import {TourMatMenuModule} from 'ngx-ui-tour-md-menu';
+import {AppAnalyticsService} from '@core/services/app-analytics.service';
+import {AppAuthService} from '@core/services/app-auth.service';
+import {Subscription} from 'rxjs';
+import {MaButtonComponent} from '@missionaccelerator/common/ma-button';
+import {Schedule} from '@customTypes/schedule.interface';
+import {MaPillComponent} from '@missionaccelerator/common/ma-pill';
+import {MatChipsModule} from '@angular/material/chips';
+import {MaDateRangePickerComponent} from '@missionaccelerator/common/ma-calendar-heatmap';
+import calendarTourSteps from './calendar.component.tour';
+import {addNewData, filterData} from './modalData';
+
+const dateOptions: Intl.DateTimeFormatOptions = {
+    month: 'numeric',
+    day: 'numeric',
+    year: 'numeric',
+};
+
+@Component({
+    selector: 'app-calendar',
+    templateUrl: './calendar.component.html',
+    styleUrls: ['./calendar.component.scss'],
+    standalone: true,
+    imports: [
+        MaSearchComponent,
+        MatDialogModule,
+        MatButtonModule,
+        MaDateRangePickerComponent,
+        MatIconModule,
+        MaDataCardComponent,
+        MaGanttChartModule,
+        MaBreadcrumbsModule,
+        SourceSelectionComponent,
+        TourMatMenuModule,
+        AnalyticsModule,
+        MaButtonComponent,
+        MaPillComponent,
+        MatChipsModule,
+    ],
+})
+
+// TODO: for further enhancement, the schedule calendar selection is a critical part of flow on this work
+// A platform can have multiple scheduleIds, without scheduleId, we will not be able to query or update the
+export class CalendarComponent implements OnInit, AfterViewInit, OnDestroy {
+    assetScheduleToBeCreated: AssetSchedule;
+
+    parentOptions: string[] = [];
+
+    filteredOptions: string[] = [];
+
+    locationsAndAssets: any[] | undefined;
+
+    searchTerm = '';
+
+    assetSchedules: AssetSchedule[] = [];
+
+    daysBeforeInduction: number[] = [30, 45, 180];
+
+    displayedGanttBars: GanttBar[] = [];
+
+    ganttBars: GanttBar[] = [];
+
+    dataCards: DataCard[] = [];
+
+    addNewCard: AddNewDataCard = {
+        showAddNew: false,
+        thirdRow: '',
+    };
+
+    platform = '';
+
+    showModal: boolean = false;
+
+    endInduction: Date | undefined;
+
+    breadcrumbs: BreadcrumbLink[] = [];
+
+    isLoading = false;
+
+    hasTour = false;
+
+    dateRange = signal<string>('none');
+
+    years: string[] = [];
+
+    private readonly MODULE_NAME = 'calendar';
+
+    private subscriptions = new Subscription();
+
+    filterModalData = filterData;
+
+    // These are tourIds that are not rendered unless the user is admin
+    private adminTourIds: string[] = ['calendar-step-3'];
+
+    public selectedYear = [new Date().getFullYear().toString()];
+
+    public selectedAssetScheduleTitle = '';
+
+    private tourConfig = {
+        enableBackdrop: true,
+        backdropConfig: {
+            offset: 10,
+        },
+        showProgress: false,
+        disableScrollToAnchor: true,
+    };
+
+    constructor(
+        public dialog: MatDialog,
+        private assetScheduleApiService: AssetScheduleApiService,
+        private breadcrumbsService: BreadcrumbService,
+        private browserRefreshedService: BrowserRefreshedService,
+        private calendarService: CalendarService,
+        private route: ActivatedRoute,
+        private scheduleApiService: ScheduleApiService,
+        private scheduleService: ScheduleService,
+        private notify: NotificationsService,
+        private router: Router,
+        private enableTourService: EnableTourService,
+        private appAnalyticsService: AppAnalyticsService,
+        private appAuthService: AppAuthService,
+        private uiTourPreferenceService: UiTourPreferenceService,
+    ) {
+        this.route.url.subscribe((url) => {
+            this.platform = url[1].path;
+        });
+        this.assetScheduleToBeCreated = this.scheduleService.getDefaultAssetSchedule();
+
+        this.enableTourService.setHasTour(true);
+        effect(() => {
+            if (this.enableTourService.getEnableTour()) {
+                this.enableTourService.getTourService().start();
+            }
+
+            if (this.dateRange()) {
+                this.setDateRangeDate();
+            }
+        });
+    }
+
+    ngOnInit(): void {
+        this.enableTourService.initializeTour(calendarTourSteps, this.tourConfig, this.adminTourIds);
+        if (this.browserRefreshedService.getBrowserRefreshed()) {
+            if (this.breadcrumbsService.getBreadcrumbs.length === 0) {
+                this.breadcrumbsService.createBreadcrumbs(this.route, 'Dashboard');
+                this.breadcrumbs = this.breadcrumbsService.getBreadcrumbs();
+            } else {
+                this.breadcrumbs = this.breadcrumbsService.getBreadcrumbs();
+                this.breadcrumbsService.setBreadcrumbs(this.breadcrumbs);
+            }
+        } else {
+            this.breadcrumbsService.createBreadcrumbs(this.route, 'Dashboard');
+            this.breadcrumbs = this.breadcrumbsService.getBreadcrumbs();
+        }
+        this.getAllData();
+
+        this.addNewCard.showAddNew = this.isAdminUser();
+        this.addNewCard.thirdRow = 'Add New';
+
+        const tourSub = this.enableTourService.getTourService().end$.subscribe(() => {
+            // End tour after tour has automatically started due to user preferences value
+            if (this.enableTourService.getEnableTour() === false) {
+                this.uiTourPreferenceService.handleDisableTourForModule(this.MODULE_NAME);
+            }
+            // End tour after a user has clicked ui-tour button to start tour
+            if (this.enableTourService.getEnableTour() === true) {
+                this.enableTourService.toggleEnableTour();
+            }
+        });
+        this.subscriptions.add(tourSub);
+    }
+
+    ngAfterViewInit() {
+        this.uiTourPreferenceService.isTourRequired(this.MODULE_NAME).subscribe((response) => {
+            if (response === true) {
+                this.enableTourService.startTourWhenReady().subscribe();
+            }
+        });
+    }
+
+    ngOnDestroy(): void {
+        this.subscriptions.unsubscribe();
+    }
+
+    isAdminUser(): boolean {
+        return this.appAuthService.isAdminUser();
+    }
+
+    getAllData(): void {
+        this.isLoading = true;
+        this.dataCards.splice(0, this.dataCards.length);
+        this.scheduleApiService.getAllSchedules().subscribe((schedules) => {
+            this.scheduleApiService.setSchedule(schedules);
+            // Related to the todo comment at the beginning of this class, the reason we pick [0]
+            // is only because P8 has one scheduleId, this code will be broken for F18 when there are
+            // multiple schedules. The schedule pick is needed to be implemented asap
+            this.onSchedulesChange(schedules[0]);
+            this.setFilterElement(schedules);
+        }).add(() => {
+            this.isLoading = false;
+        });
+    }
+
+    getYear(dateString: string) {
+        const dayOfInduction = new Date(dateString);
+        const offsetMinutes = dayOfInduction.getTimezoneOffset();
+        const adjustedDate = new Date(dayOfInduction.getTime() + (offsetMinutes * 60 * 1000));
+        return adjustedDate.getFullYear().toString();
+    }
+
+    onSchedulesChange(schedules: Schedule) {
+        this.dataCards = [];
+        this.ganttBars = [];
+        this.assetScheduleToBeCreated.scheduleId = schedules.id;
+        this.assetSchedules = [...schedules.assetSchedules];
+        this.parentOptions = Array.from(new Set(this.assetSchedules.map((assetSchedule) => assetSchedule.asset)));
+        this.years = this.assetSchedules.map((assetSchedule) => this.getYear(assetSchedule.dayOfInduction.toString()));
+        this.years.sort((a, b) => Number(a) - Number(b));
+        this.years = [...new Set(this.years)];
+        // const currentYear = (new Date().getFullYear());
+        const selectedYear = this.years.some((option) => this.selectedYear.includes(option)) ? this.selectedYear : [this.years[0]];
+        this.selectedYear = selectedYear;
+        const filteredAssetSchedule = this.assetSchedules.filter((assetSchedule) => selectedYear.includes(this.getYear(assetSchedule.dayOfInduction.toString())));
+        filteredAssetSchedule.forEach((assetSchedule) => {
+            const date = new Date(assetSchedule.dayOfInduction);
+            this.dataCards.push(this.calendarService.createDataCard(assetSchedule));
+            const ganttBar: GanttBar = {
+                barTitle: assetSchedule.asset,
+                overviewPageLink: `/V3/${this.platform}/${assetSchedule.asset}/overview`,
+                startDate: date.toLocaleDateString('en-US', dateOptions),
+                endDate: assetSchedule.endDayOfInduction
+                    ? new Date(assetSchedule.endDayOfInduction).toLocaleDateString('en-US', dateOptions) : new Date().toLocaleDateString('en-US', dateOptions),
+                statusColor: this.calendarService.getAssetStatusColorCode(assetSchedule.tdPrerequisitePercentage || ''),
+                barWidth: 0,
+                barTranslation: 0,
+            };
+            this.ganttBars.push(ganttBar);
+        });
+        setTimeout(() => this.setDateRangeDate(), 0);
+        this.scheduleService.broadcastScheduleChange(schedules);
+    }
+
+    setFilterElement(schedules: Schedule[]): void {
+        const dashboardElement = this.filterModalData.elements.find((element) => element.label === 'Dashboard');
+        const yearElement = this.filterModalData.elements.find((element) => element.label === 'Year');
+        if (yearElement) {
+            const values = this.years.map((year) => ({
+                value: year.toString(),
+                viewValue: year.toString(),
+            }));
+            yearElement.values = values;
+            // const currentYear = (new Date().getFullYear()).toString();
+            yearElement.selectedValue = this.selectedYear;
+            // values.some(option =>
+            // option.value === currentYear) ? currentYear : values[0].value;
+        }
+
+        if (dashboardElement) {
+            let found = false;
+            const grouped = schedules.reduce((acc: any, schedule) => {
+                const {country} = schedule.source;
+
+                if (!acc[country]) {
+                    acc[country] = {
+                        label: country,
+                        values: [],
+                    };
+                }
+
+                acc[country].values.push({
+                    value: schedule,
+                    viewValue: schedule.title,
+                    disabled: schedule.assetSchedules.length === 0,
+                });
+
+                // If the schedule is already set need to find it and set the correct value.
+                if (!this.scheduleService.isDefaultSchedule()
+                           && schedule.id === this.scheduleService.getScheduleId()) {
+                    dashboardElement.selectedValue = schedule as any;
+                    this.selectedAssetScheduleTitle = schedule.title;
+                    found = true;
+                }
+
+                return acc;
+            }, {});
+            dashboardElement.groups = Object.values((grouped));
+
+            if (this.scheduleService.isDefaultSchedule() || !found) {
+                dashboardElement.selectedValue = schedules[0] as any;
+                this.selectedAssetScheduleTitle = schedules[0].title;
+            }
+        }
+    }
+
+    onClickFilter() {
+        const filterDialog = this.dialog.open(MaModalComponent, {
+            data: this.filterModalData,
+        });
+
+        filterDialog.componentInstance.submitEvent.subscribe((modalData: ModalSubmitEvent) => {
+            if (modalData.eventType === 'submit') {
+                this.displayedGanttBars = [];
+                const dashboardElement = modalData.elements.find((element) => element.label === 'Dashboard');
+                const yearElement = modalData.elements.find((element) => element.label === 'Year');
+                if (yearElement) {
+                    this.selectedYear = yearElement.selectedValue;
+                }
+                if (dashboardElement) {
+                    this.selectedAssetScheduleTitle = dashboardElement.selectedValue.title;
+                    this.onSchedulesChange(dashboardElement.selectedValue);
+                }
+            }
+        });
+    }
+
+    createAddNewAssetSchedule(): void {
+        const dropdownElement = addNewData.elements.find((element) => element.label === 'Buno');
+        // This observable gets all assetIds, the naming is confusing
+        this.assetScheduleApiService.getAllAssets().subscribe((response) => {
+            this.assetScheduleApiService.setAssetIds(response);
+            const result = response
+                .map((item) => ({value: item.buno, viewValue: item.buno}))
+                .filter((item) => !this.dataCards.some((obj) => obj.secondRow === item.value));
+            if (dropdownElement) {
+                dropdownElement.values = result;
+            }
+        });
+    }
+
+    createAssetSchedule(): void {
+        this.assetScheduleApiService.createAssetSchedule(this.assetScheduleToBeCreated).subscribe({
+            next: (response) => {
+                this.assetScheduleToBeCreated.id = response;
+                this.scheduleService.createAssetSchedule(this.assetScheduleToBeCreated);
+                this.notify.success(` Asset ${this.assetScheduleToBeCreated.asset} was added to Schedule successfully.`);
+                this.scheduleApiService.setSchedule([]);
+                this.getAllData();
+            },
+            error: (error) => {
+                console.error('Error handler:', error);
+                this.notify.error('An error occurred while fetching Schedule data.');
+            },
+        });
+    }
+
+    dateRangeSelectedEvent(dateRange: string) {
+        this.dateRange.set(dateRange);
+    }
+
+    onSearchValueChanged(value: string): void {
+        this.searchTerm = value;
+        const filterValue = (value || '').toLowerCase();
+        this.dataCards.forEach((card) => {
+            card.visible = card.secondRow.toLowerCase().includes(filterValue);
+        });
+        if (value !== '') {
+            this.appAnalyticsService.trackEvent({
+                action: 'Submit',
+                element: 'Form',
+                name: 'Search',
+                aircraftTail: value,
+            });
+        }
+    }
+
+    onClickDataCard(event: {data: {secondRow: string}}): void {
+        if (event?.data?.secondRow) {
+            this.appAnalyticsService.trackEvent({
+                action: 'Open',
+                element: 'Link',
+                name: 'Data Card',
+                aircraftTail: event.data.secondRow,
+            });
+            this.router.navigate([`/V3/${this.platform}/${event?.data?.secondRow}/overview`]);
+        } else {
+            this.notify.error('Error navigating to the detail page of the aircraft');
+        }
+    }
+
+    onClickAddNew() {
+        this.appAnalyticsService.trackEvent({
+            action: 'Select',
+            element: 'Button',
+            name: 'Add New Data Card',
+        });
+        this.createAddNewAssetSchedule();
+        const dialogRef = this.dialog.open(MaModalComponent, {
+            data: addNewData,
+        });
+
+        dialogRef.componentInstance.submitEvent.subscribe((modalData: ModalSubmitEvent) => {
+            this.assetScheduleToBeCreated = this.calendarService.prepareAssetScheduleData(modalData, this.assetScheduleToBeCreated, 'create');
+            this.createAssetSchedule();
+        });
+    }
+
+    setDateRangeDate(): void {
+        if (this.dateRange() !== 'none') {
+            const dateRangeDate = new Date();
+            const words: string[] = this.dateRange()!.split(' ');
+            const num: number = parseInt(words[0], 10);
+            const today = new Date();
+            const word: string = words[1];
+            let filtered: GanttBar[] = [];
+
+            if (word === 'Months') {
+                dateRangeDate.setMonth(dateRangeDate.getMonth() + num);
+            } else if (word === 'Years') {
+                dateRangeDate.setFullYear(dateRangeDate.getFullYear() + num);
+            }
+
+            filtered = this.ganttBars.filter((ganttBar: GanttBar) => {
+                const startDate = new Date(ganttBar.startDate);
+
+                const isFiltered = startDate >= today && startDate <= dateRangeDate;
+
+                return (isFiltered);
+            });
+
+            this.displayedGanttBars = filtered;
+        } else {
+            this.displayedGanttBars = this.ganttBars;
+        }
+    }
+}
