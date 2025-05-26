@@ -1,0 +1,41 @@
+// This file can be replaced during build by using the `fileReplacements` array.
+// `ng build --prod` replaces `environment.local.ts` with `environmentLocal.prod.ts`.
+// The list of file replacements can be found in `angular.json`.
+
+import {
+    API, ApiGatewayMode, CloudEnvironment, Environment, PROXY_PATH, ValidAuthFlow,
+} from '@missionaccelerator/common/model';
+
+export const environment: Environment = {
+    production: false,
+    title: 'Induction Planner',
+    routing: {
+        api: API.DEFAULT_API_PREFIX,
+        proxyPath: PROXY_PATH.INDUCTION_PLANNER,
+        isWorkstationBpnTest: false,
+        apiGatewayMode: ApiGatewayMode.CLOUD_TAS_USA,
+        cloudEnvironment: CloudEnvironment.PREPROD,
+        localRoutesEnabled: true,
+        localRoutes: {
+            // [PROXY_PATH.INDUCTION_PLANNER]: 'http://localhost:5050',
+            [PROXY_PATH.INDUCTION_PLANNER]: 'https://missionaccelerator-test.web.boeing.com/api-gateway/induction-planner',
+            [PROXY_PATH.STATIC_ASSETS]: 'https://missionaccelerator-test.web.boeing.com/api-gateway/static-assets',
+        },
+    },
+    matomoTrackingId: '21',
+    sso: {
+        clientId: 'induction-planner-ui',
+        validAuthFlows: [ValidAuthFlow.BPN_HEADER, ValidAuthFlow.ACCESS_TOKEN],
+        skipKeycloakLogin: true,
+        disableTokenRefresh: false,
+    },
+};
+
+/*
+ * For easier debugging in development mode, you can import the following file
+ * to ignore zone related error stack frames such as `zone.run`, `zoneDelegate.invokeTask`.
+ *
+ * This import should be commented out in production mode because it will have a negative impact
+ * on performance if an error is thrown.
+ */
+// import 'zone.js/plugins/zone-error';  // Included with Angular CLI.
